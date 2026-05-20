@@ -2,141 +2,123 @@
 
 import { useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { useRouter } from "next/navigation";
 
 export default function SignupPage() {
-  const router = useRouter();
-
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [nickname, setNickname] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
 
   const handleSignup = async () => {
-    setLoading(true);
-    setError("");
+    // create auth user
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+    });
 
-    try {
-      // 1. Create auth user
-      const { data, error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
-      });
+    if (error) {
+      alert(error.message);
+      return;
+    }
 
-      if (signUpError) {
-        setError(signUpError.message);
-        setLoading(false);
-        return;
-      }
+    const user = data.user;
 
-      const user = data?.user;
+    if (!user) {
+      alert("User creation failed");
+      return;
+    }
 
-      if (!user) {
-        setError("User creation failed or still pending.");
-        setLoading(false);
-        return;
-      }
+    // get all cohorts
+    const { data: cohorts, error: cohortError } = await supabase
+      .from("cohorts")
+      .select("*");
 
-      // 2. Get today's date
-      const today = new Date().toISOString().split("T")[0];
+    if (cohortError || !cohorts || cohorts.length === 0) {
+      alert("No cohorts found");
+      return;
+    }
 
-      // 3. Check if today's cohort exists
-      const { data: existingCohort } = await supabase
-        .from("cohorts")
-        .select("*")
-        .eq("start_date", today)
-        .single();
+    // assign random cohort
+    const randomCohort =
+      cohorts[Math.floor(Math.random() * cohorts.length)];
 
-      let cohortId;
-
-      // 4. Create cohort if not exists
-      if (!existingCohort) {
-        const { data: newCohort, error: cohortError } = await supabase
-          .from("cohorts")
-          .insert({
-            start_date: today,
-            end_date: new Date(
-              Date.now() + 14 * 24 * 60 * 60 * 1000
-            )
-              .toISOString()
-              .split("T")[0],
-            status: "active",
-          })
-          .select()
-          .single();
-
-        if (cohortError) {
-          setError(cohortError.message);
-          setLoading(false);
-          return;
-        }
-
-        cohortId = newCohort?.id;
-      } else {
-        cohortId = existingCohort.id;
-      }
-
-      // 5. Insert user profile into database
-      const { error: profileError } = await supabase.from("users").insert({
+    // insert into users table
+    const { error: insertError } = await supabase
+      .from("users")
+      .insert({
         id: user.id,
         email,
-        nickname,
-        total_score: 0,
-        cohort_id: cohortId,
+        role: "user",
+        cohort_id: randomCohort.id,
       });
 
-      if (profileError) {
-        setError(profileError.message);
-        setLoading(false);
-        return;
-      }
-
-      setLoading(false);
-
-      // 6. Go to dashboard
-      router.push("/dashboard");
-    } catch (err: any) {
-      setError(err.message || "Unexpected error occurred");
-      setLoading(false);
+    if (insertError) {
+      alert(insertError.message);
+      return;
     }
+
+    alert("Signup successful 🚀");
+
+    window.location.href = "/dashboard";
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center">
-      <div className="w-full max-w-md p-6 border rounded-xl">
-        <h1 className="text-2xl font-bold mb-4">Signup 🚀</h1>
+    <main
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        background: "#0f172a",
+        color: "white",
+      }}
+    >
+      <div
+        style={{
+          width: 350,
+          padding: 30,
+          borderRadius: 12,
+          background: "#1e293b",
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+      >
+        <h1 style={{ margin: 0 }}>BugBase Signup 🚀</h1>
 
         <input
-          className="w-full p-2 border mb-2"
+          type="email"
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
+          style={{
+            padding: 12,
+            borderRadius: 8,
+            border: "none",
+          }}
         />
 
         <input
-          className="w-full p-2 border mb-2"
-          placeholder="Password"
           type="password"
+          placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
+          style={{
+            padding: 12,
+            borderRadius: 8,
+            border: "none",
+          }}
         />
-
-        <input
-          className="w-full p-2 border mb-2"
-          placeholder="Nickname"
-          value={nickname}
-          onChange={(e) => setNickname(e.target.value)}
-        />
-
-        {error && <p className="text-red-500 mb-2">{error}</p>}
 
         <button
           onClick={handleSignup}
-          disabled={loading}
-          className="w-full bg-black text-white p-2 mt-2"
+          style={{
+            padding: 12,
+            borderRadius: 8,
+            border: "none",
+            cursor: "pointer",
+            fontWeight: "bold",
+          }}
         >
-          {loading ? "Creating account..." : "Create Account"}
+          Create Account
         </button>
       </div>
     </main>
