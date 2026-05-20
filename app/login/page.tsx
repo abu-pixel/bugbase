@@ -1,10 +1,26 @@
 "use client";
 
 import { useState } from "react";
+import { supabase } from "@/lib/supabase";
 
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
+  const handleLogin = async () => {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    // redirect after successful login
+    window.location.href = "/dashboard";
+  };
 
   return (
     <main style={{ padding: 40 }}>
@@ -25,7 +41,7 @@ export default function Login() {
         style={{ display: "block", marginBottom: 10 }}
       />
 
-      <button>Login</button>
+      <button onClick={handleLogin}>Login</button>
     </main>
   );
 }
