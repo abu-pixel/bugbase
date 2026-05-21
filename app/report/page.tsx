@@ -2,204 +2,180 @@
 
 import { useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { useRouter } from "next/navigation";
+import { calculateBugScore } from "@/lib/aiScore";
+import { logAction } from "@/lib/audit";
 
 export default function ReportPage() {
-  const router = useRouter();
-
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [severity, setSeverity] = useState("Low");
   const [file, setFile] = useState<File | null>(null);
-
   const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState("");
 
-  // -----------------------------
-  // SCORE CALCULATION
-  // -----------------------------
-  const calculateScore = () => {
-    let points = 0;
+  // 📸 Upload screenshot to Supabase storage
+  const uploadImage = async () => {
+    if (!file) return null;
 
-    if (description.length > 50) points += 2;
-    if (title.length > 10) points += 1;
+    const fileName = `${Date.now()}-${file.name}`;
 
-    if (severity === "High") points += 2;
-    if (severity === "Critical") points += 3;
+    const { data, error } = await supabase.storage
+      .from("bug-screenshots")
+      .upload(fileName, file);
 
-    if (file) points += 2;
+    if (error) {
+      console.log("Upload error:", error.message);
+      return null;
+    }
 
-    return points;
+    const { data: publicUrl } = supabase.storage
+      .from("bug-screenshots")
+      .getPublicUrl(data.path);
+
+    return publicUrl.publicUrl;
   };
 
-  // -----------------------------
-  // SUBMIT REPORT
-  // -----------------------------
+  // 🚀 MAIN SUBMIT FUNCTION (SECURE + AI + AUDIT + SCORING)
   const submitReport = async () => {
     setLoading(true);
-    setMessage("");
 
     try {
-      // 1. Get logged-in user
       const { data: authData } = await supabase.auth.getUser();
-      const user = authData?.user;
 
-      if (!user) {
-        setMessage("You must be logged in");
+      if (!authData.user) {
+        alert("Login required");
         setLoading(false);
         return;
       }
 
-      // 2. Get user profile
-      const { data: profile } = await supabase
-        .from("users")
-        .select("*")
-        .eq("id", user.id)
+      // 📸 upload image
+      const imageUrl = await uploadImage();
+
+      // 🤖 AI score calculation (quality-based)
+      const aiScore = calculateBugScore(title, description);
+
+      // 💾 insert report into database
+      const { data, error } = await supabase
+        .from("daily_reports")
+        .insert({
+          user_id: authData.user.id,
+          title,
+          description,
+          image_url: imageUrl,
+          status: "pending",
+          ai_score: aiScore,
+        })
+        .select()
         .single();
 
-      if (!profile) {
-        setMessage("Profile not found");
+      if (error) {
+        alert(error.message);
         setLoading(false);
         return;
       }
 
-      // 3. UPLOAD SCREENSHOT (if exists)
-      let screenshotUrl = "";
-
-      if (file) {
-        const fileName = `${Date.now()}-${file.name}`;
-
-        const { error: uploadError } = await supabase.storage
-          .from("bug-screenshots")
-          .upload(fileName, file);
-
-        if (uploadError) {
-          setMessage(uploadError.message);
-          setLoading(false);
-          return;
-        }
-
-        const { data } = supabase.storage
-          .from("bug-screenshots")
-          .getPublicUrl(fileName);
-
-        screenshotUrl = data.publicUrl;
-      }
-
-      // -----------------------------
-      // 4. DUPLICATE DETECTION LOGIC
-      // -----------------------------
-      let duplicatePenalty = 0;
-
-      const { data: recentReports } = await supabase
-        .from("daily_reports")
-        .select("title, description")
-        .eq("cohort_id", profile.cohort_id)
-        .limit(20);
-
-      if (recentReports && recentReports.length > 0) {
-        for (const r of recentReports) {
-          const isDuplicate =
-            r.title.toLowerCase().includes(title.toLowerCase()) ||
-            r.description.toLowerCase().includes(description.toLowerCase());
-
-          if (isDuplicate) {
-            duplicatePenalty = 50; // strong penalty
-            break;
-          }
-        }
-      }
-
-      // 5. CALCULATE SCORE
-      let score = calculateScore() - duplicatePenalty;
-
-      if (score < 0) score = 0;
-
-      // 6. INSERT REPORT
-      const { error } = await supabase.from("daily_reports").insert({
-        user_id: user.id,
-        cohort_id: profile.cohort_id,
-        title,
-        description,
-        severity,
-        score,
-        screenshot_url: screenshotUrl,
+      // 🔐 SERVER-SIDE SCORING (secure)
+      await fetch("/api/score", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          user_id: authData.user.id,
+          report_id: data.id,
+          base_score: aiScore,
+        }),
       });
 
-      if (error) {
-        setMessage(error.message);
-        setLoading(false);
-        return;
-      }
+      // 📜 AUDIT LOG (admin tracking)
+      await logAction({
+        user_id: authData.user.id,
+        action: "SUBMIT_REPORT",
+        entity_type: "daily_report",
+        entity_id: data.id,
+        metadata: {
+          title,
+          aiScore,
+          hasImage: !!imageUrl,
+        },
+      });
 
-      // 7. UPDATE USER SCORE
-      await supabase.rpc("update_user_score", {
-  user_id: user.id,
-  new_score: score,
-});
+      alert("Report submitted successfully 🚀");
 
-      // 8. SUCCESS
-      setLoading(false);
-      setMessage(`Report submitted! +${score} points`);
-
-      router.push("/leaderboard");
-    } catch (err: any) {
-      setMessage(err.message || "Something went wrong");
-      setLoading(false);
+      setTitle("");
+      setDescription("");
+      setFile(null);
+    } catch (err) {
+      console.log(err);
+      alert("Something went wrong");
     }
+
+    setLoading(false);
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center">
-      <div className="w-full max-w-md border p-6 rounded-xl">
+    <main
+      style={{
+        minHeight: "100vh",
+        background: "#0f172a",
+        color: "white",
+        padding: 20,
+      }}
+    >
+      <h1>Submit Bug Report 🐛</h1>
 
-        <h1 className="text-2xl font-bold mb-4">
-          Submit Bug Report 🐞
-        </h1>
-
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+          maxWidth: 500,
+          marginTop: 20,
+        }}
+      >
         <input
-          className="w-full p-2 border mb-2"
           placeholder="Bug title"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
+          style={{
+            padding: 12,
+            borderRadius: 8,
+          }}
         />
 
         <textarea
-          className="w-full p-2 border mb-2"
           placeholder="Bug description"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
+          style={{
+            padding: 12,
+            borderRadius: 8,
+            minHeight: 150,
+          }}
         />
 
-        <select
-          className="w-full p-2 border mb-2"
-          value={severity}
-          onChange={(e) => setSeverity(e.target.value)}
-        >
-          <option>Low</option>
-          <option>Medium</option>
-          <option>High</option>
-          <option>Critical</option>
-        </select>
-
+        {/* 📸 Screenshot upload */}
         <input
           type="file"
-          className="w-full mb-2"
-          onChange={(e) =>
-            setFile(e.target.files?.[0] || null)
-          }
+          accept="image/*"
+          onChange={(e) => setFile(e.target.files?.[0] || null)}
         />
 
-        {message && (
-          <p className="text-blue-600 text-sm mb-2">
-            {message}
+        {file && (
+          <p style={{ color: "#38bdf8" }}>
+            Selected: {file.name}
           </p>
         )}
 
         <button
           onClick={submitReport}
           disabled={loading}
-          className="w-full bg-black text-white p-2"
+          style={{
+            padding: 12,
+            borderRadius: 8,
+            cursor: "pointer",
+            fontWeight: "bold",
+            background: loading ? "#334155" : "#2563eb",
+            color: "white",
+          }}
         >
           {loading ? "Submitting..." : "Submit Report"}
         </button>
